@@ -54,123 +54,102 @@ pub fn parse_csv(content: String) -> Result<Vec<Vec<String>>, CsvParseError> {
 mod tests {
 	use super::*;
 
-	#[test]
-	fn parse_csv_test_normal_trailing_newline() {
-		assert_eq!(
-			parse_csv(String::from("a,b,c\n1,2,3\n4,5,6\n\n")),
-			Ok(vec![
-				vec![String::from("a"), String::from("b"), String::from("c")],
-				vec![String::from("1"), String::from("2"), String::from("3")],
-				vec![String::from("4"), String::from("5"), String::from("6")]
-			])
-		);
+	fn row(fields: &[&str]) -> Vec<String> {
+		fields.iter().copied().map(String::from).collect()
 	}
 
 	#[test]
-	fn parse_csv_test_normal_no_trailing_newline() {
+	fn parse_csv_test_lf_line_endings() {
 		assert_eq!(
 			parse_csv(String::from("a,b,c\n1,2,3\n4,5,6")),
-			Ok(vec![
-				vec![String::from("a"), String::from("b"), String::from("c")],
-				vec![String::from("1"), String::from("2"), String::from("3")],
-				vec![String::from("4"), String::from("5"), String::from("6")]
-			])
+			Ok(vec![row(&["a", "b", "c"]), row(&["1", "2", "3"]), row(&["4", "5", "6"])])
 		);
 	}
 
 	#[test]
-	fn parse_csv_test_normal_carriage_return() {
+	fn parse_csv_test_crlf_line_endings() {
 		assert_eq!(
 			parse_csv(String::from("a,b,c\r\n1,2,3\r\n4,5,6\n")),
-			Ok(vec![
-				vec![String::from("a"), String::from("b"), String::from("c")],
-				vec![String::from("1"), String::from("2"), String::from("3")],
-				vec![String::from("4"), String::from("5"), String::from("6")]
-			])
+			Ok(vec![row(&["a", "b", "c"]), row(&["1", "2", "3"]), row(&["4", "5", "6"])])
 		);
 	}
 
 	#[test]
-	fn parse_csv_test_quotes() {
+	fn parse_csv_test_trailing_blank_lines_ignored() {
+		assert_eq!(
+			parse_csv(String::from("a,b,c\n1,2,3\n4,5,6\n\n")),
+			Ok(vec![row(&["a", "b", "c"]), row(&["1", "2", "3"]), row(&["4", "5", "6"])])
+		);
+	}
+
+	#[test]
+	fn parse_csv_test_quoted_fields() {
+		// Covers escaped quotes (""), an embedded newline inside quotes, and empty quoted fields.
 		assert_eq!(
 			parse_csv(String::from("a,b,c\n\"1\",\"\"\"2\n,\"\"\",3\n4,\"\",6")),
 			Ok(vec![
-				vec![String::from("a"), String::from("b"), String::from("c")],
-				vec![String::from("1"), String::from("\"2\n,\""), String::from("3")],
-				vec![String::from("4"), String::from(""), String::from("6")]
+				row(&["a", "b", "c"]),
+				row(&["1", "\"2\n,\"", "3"]),
+				row(&["4", "", "6"])
 			])
 		);
 	}
 
 	#[test]
-	fn parse_csv_test_whitespace() {
-		assert_eq!(
-			parse_csv(String::from("\ta,b,c\n1,2,3  ")),
-			Ok(vec![
-				vec![String::from("\ta"), String::from("b"), String::from("c")],
-				vec![String::from("1"), String::from("2"), String::from("3  ")],
-			])
-		);
+	fn parse_csv_test_whitespace_preserved() {
+		assert_eq!(parse_csv(String::from("\ta,b,c\n1,2,3  ")), Ok(vec![row(&["\ta", "b", "c"]), row(&["1", "2", "3  "])]));
 	}
 
 	#[test]
-	fn parse_csv_test_empty_rows() {
+	fn parse_csv_test_empty_fields() {
 		assert_eq!(
 			parse_csv(String::from("a,b,c\n,,\n4,5,6")),
-			Ok(vec![
-				vec![String::from("a"), String::from("b"), String::from("c")],
-				vec![String::from(""), String::from(""), String::from("")],
-				vec![String::from("4"), String::from("5"), String::from("6")]
-			])
+			Ok(vec![row(&["a", "b", "c"]), row(&["", "", ""]), row(&["4", "5", "6"])])
 		);
 	}
 
 	#[test]
-	fn parse_csv_test_trailing_data() {
-		assert_eq!(
-			parse_csv(String::from("a,b,")),
-			Ok(vec![vec![String::from("a"), String::from("b"), String::from("")],])
-		);
-
-		assert_eq!(parse_csv(String::from(",")), Ok(vec![vec![String::from(""), String::from("")],]));
-
-		assert_eq!(parse_csv(String::from("\"\"")), Ok(vec![vec![String::from("")]]));
-
-		assert_eq!(
-			parse_csv(String::from("a,b\n,")),
-			Ok(vec![
-				vec![String::from("a"), String::from("b")],
-				vec![String::from(""), String::from("")],
-			]),
-		);
+	fn parse_csv_test_trailing_comma_is_empty_field() {
+		assert_eq!(parse_csv(String::from("a,b,")), Ok(vec![row(&["a", "b", ""])]));
 	}
 
 	#[test]
-	fn parse_csv_test_malformed_csv() {
+	fn parse_csv_test_trailing_lone_comma_row() {
+		assert_eq!(parse_csv(String::from("a,b\n,")), Ok(vec![row(&["a", "b"]), row(&["", ""])]));
+	}
+
+	#[test]
+	fn parse_csv_test_lone_comma() {
+		assert_eq!(parse_csv(String::from(",")), Ok(vec![row(&["", ""])]));
+	}
+
+	#[test]
+	fn parse_csv_test_lone_empty_quoted_field() {
+		assert_eq!(parse_csv(String::from("\"\"")), Ok(vec![row(&[""])]));
+	}
+
+	#[test]
+	fn parse_csv_test_empty_input() {
+		assert_eq!(parse_csv(String::from("")), Ok(vec![]));
+	}
+
+	#[test]
+	fn parse_csv_test_blank_line_between_rows() {
+		// A blank line in the middle parses as a row with a single empty field,
+		// which is distinct from the trailing-blank-lines case.
 		assert_eq!(
 			parse_csv(String::from("a,b,c\n\n4,5,6")),
-			Ok(vec![
-				vec![String::from("a"), String::from("b"), String::from("c")],
-				vec![String::from("")],
-				vec![String::from("4"), String::from("5"), String::from("6")]
-			])
-		);
-
-		assert_eq!(parse_csv(String::from("")), Ok(vec![]));
-
-		assert_eq!(parse_csv(String::from("\"\"")), Ok(vec![vec![String::from("")]]));
-
-		assert_eq!(parse_csv(String::from("a,b,")), Ok(vec![vec![String::from("a"), String::from("b"), String::from("")]]));
-
-		assert_eq!(
-			parse_csv(String::from("a,\"b\",c")),
-			Ok(vec![vec![String::from("a"), String::from("b"), String::from("c")]])
+			Ok(vec![row(&["a", "b", "c"]), row(&[""]), row(&["4", "5", "6"])])
 		);
 	}
 
 	#[test]
-	fn parse_csv_test_missing_quotes() {
+	fn parse_csv_test_unterminated_quote_mid_field() {
 		assert_eq!(parse_csv(String::from("a,b,c\n1,2,\"3\n4,5,6")), Err(CsvParseError::UnterminatedQuote));
+	}
+
+	#[test]
+	fn parse_csv_test_unescaped_quote_inside_quoted_field() {
 		assert_eq!(parse_csv(String::from("a,b,c\n\"1\",\"\"2,3\n4,5,6\"")), Err(CsvParseError::UnterminatedQuote));
 	}
 }
