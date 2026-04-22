@@ -1,13 +1,9 @@
 use std::path::PathBuf;
 
 mod csv_simple;
-
-use crate::csv_simple::parse_csv;
+mod csv_sliding_window;
 
 fn main() {
-	let csv_file = PathBuf::from("test.csv");
-	match std::fs::read_to_string(csv_file) {
-		Ok(content) => println!("{:#?}", parse_csv(content)),
-		Err(error) => eprintln!("An error occurred while reading the CSV file: {error}"),
-	}
+	println!("csv_simple:\n{:?}", csv_simple::parse_csv(PathBuf::from("test.csv")));
+	println!("csv_sliding_window:\n{:?}", csv_sliding_window::parse_csv(PathBuf::from("test.csv")));
 }
