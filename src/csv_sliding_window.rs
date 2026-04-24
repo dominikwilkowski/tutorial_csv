@@ -14,6 +14,7 @@ struct InputState<'a> {
 	cell: String,
 	inside_quote: bool,
 	last_char_was_cr: bool,
+	last_tail: ([u8; 3], usize),
 }
 
 #[derive(Debug, PartialEq, Default)]
@@ -23,18 +24,21 @@ struct OutputState {
 	cell: String,
 	inside_quote: bool,
 	last_char_was_cr: bool,
+	last_tail: ([u8; 3], usize),
 }
+
+const BUFFER_SIZE: usize = 4096;
 
 pub fn parse_csv(csv_file: PathBuf) -> Result<Vec<Vec<String>>, CsvParseError> {
 	match File::open(csv_file) {
 		Ok(mut content) => {
-			// TODO: carry over bug where we split sequences into two just at the boundary `\r\n` or emojis with multiple utf-8 bytes
-			let mut buffer = [0_u8; 4096];
+			let mut buffer = [0_u8; BUFFER_SIZE];
 			let mut csv = Vec::new();
 			let mut row = Vec::new();
 			let mut cell = String::new();
 			let mut inside_quote = false;
 			let mut last_char_was_cr = false;
+			let mut last_tail = ([0; 3], 0);
 
 			while let Ok(bytes_read) = content.read(&mut buffer) {
 				if bytes_read == 0 {
@@ -51,6 +55,7 @@ pub fn parse_csv(csv_file: PathBuf) -> Result<Vec<Vec<String>>, CsvParseError> {
 					cell,
 					inside_quote,
 					last_char_was_cr,
+					last_tail,
 				}) {
 					Ok(result) => {
 						csv.extend(result.csv);
@@ -58,6 +63,7 @@ pub fn parse_csv(csv_file: PathBuf) -> Result<Vec<Vec<String>>, CsvParseError> {
 						cell = result.cell;
 						inside_quote = result.inside_quote;
 						last_char_was_cr = result.last_char_was_cr;
+						last_tail = result.last_tail;
 					},
 					Err(error) => {
 						return Err(error);
@@ -85,17 +91,65 @@ pub fn parse_csv(csv_file: PathBuf) -> Result<Vec<Vec<String>>, CsvParseError> {
 	}
 }
 
+/// Returns the index where an possibly truncated final codepoint begins or `bytes.len()`
+/// if the slice ends on a clean codepoint boundary.
+fn utf8_tail_start(bytes: &[u8]) -> usize {
+	// the tail can't exceed 3 bytes: a 4-byte codepoint is UTF-8's longest,
+	// so any incomplete tail is 1-3 bytes of a 2/3/4-byte codepoint
+	for offset in 1..=3.min(bytes.len()) {
+		let byte = bytes[bytes.len() - offset];
+
+		// continuation bytes (10xxxxxx) aren't the start of anything; keep walking
+		// https://www.rfc-editor.org/rfc/rfc3629#section-3
+		if byte & 0b1100_0000 == 0b1000_0000 {
+			continue;
+		}
+
+		// leading byte found; the count of leading 1-bits gives the codepoint's length
+		// (0 leading ones = ASCII, 2/3/4 = multi-byte, anything else is malformed)
+		let expected = match byte.leading_ones() {
+			0 => 1,
+			count @ 2..=4 => count as usize,
+			_ => return bytes.len(),
+		};
+
+		return if offset < expected {
+			bytes.len() - offset
+		} else {
+			bytes.len()
+		};
+	}
+	bytes.len()
+}
+
 fn parse(state: InputState) -> Result<OutputState, CsvParseError> {
+	let tail_start = utf8_tail_start(state.chunk);
+	let (valid_prefix, tail) = state.chunk.split_at(tail_start);
+
+	let mut combine_buffer = [0_u8; BUFFER_SIZE + 3];
+	let tail_len = state.last_tail.1;
+	let full_content: &[u8] = if tail_len == 0 {
+		valid_prefix
+	} else {
+		combine_buffer[..tail_len].copy_from_slice(&state.last_tail.0[..tail_len]);
+		combine_buffer[tail_len..tail_len + valid_prefix.len()].copy_from_slice(valid_prefix);
+		&combine_buffer[..tail_len + valid_prefix.len()]
+	};
+
+	let text = str::from_utf8(full_content).map_err(|_| CsvParseError::CantReadUtf8)?;
+	let mut iter = text.chars().peekable();
+
+	let mut tail_buffer = [0_u8; 3];
+	tail_buffer[..tail.len()].copy_from_slice(tail);
+
 	let mut output = OutputState {
 		csv: Vec::new(),
 		row: state.row,
 		cell: state.cell,
 		inside_quote: state.inside_quote,
 		last_char_was_cr: state.last_char_was_cr,
+		last_tail: (tail_buffer, tail.len()),
 	};
-
-	let text = str::from_utf8(state.chunk).map_err(|_| CsvParseError::CantReadUtf8)?;
-	let mut iter = text.chars().peekable();
 
 	while let Some(character) = iter.next() {
 		match character {
@@ -409,10 +463,9 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_csv_test_break_multi_codepoint_utf8_sequence() {
+	fn parse_csv_test_break_4_byte_utf8_sequence() {
 		let whole_content = "a,🧑🏿‍💻,c".as_bytes();
 		let (content_left, content_right): (&[u8], &[u8]) = whole_content.split_at(whole_content.len() / 2);
-		println!("content_left={content_left:?} with length={}", whole_content.len());
 
 		assert_eq!(
 			parse(InputState {
@@ -420,8 +473,10 @@ mod tests {
 				..Default::default()
 			}),
 			Ok(OutputState {
-				csv: vec![row(&["a", "b", "c"])],
-				last_char_was_cr: true,
+				csv: Vec::new(),
+				row: row(&["a"]),
+				cell: String::from("🧑"),
+				last_tail: ([240, 159, 143], 3),
 				..Default::default()
 			})
 		);
@@ -429,15 +484,147 @@ mod tests {
 		assert_eq!(
 			parse(InputState {
 				chunk: content_right,
-				last_char_was_cr: true,
+				row: row(&["a"]),
+				cell: String::from("🧑"),
+				last_tail: ([240, 159, 143], 3),
 				..Default::default()
 			}),
 			Ok(OutputState {
 				csv: Vec::new(),
-				row: row(&["1", "2"]),
-				cell: String::from("3"),
+				row: row(&["a", "🧑🏿‍💻"]),
+				cell: String::from("c"),
 				..Default::default()
 			})
 		);
+	}
+
+	#[test]
+	fn parse_csv_test_break_3_byte_utf8_sequence() {
+		let whole_content = "a,€,c".as_bytes();
+		let (content_left, content_right): (&[u8], &[u8]) = whole_content.split_at(whole_content.len() / 2);
+
+		assert_eq!(
+			parse(InputState {
+				chunk: content_left,
+				..Default::default()
+			}),
+			Ok(OutputState {
+				csv: Vec::new(),
+				row: row(&["a"]),
+				cell: String::from(""),
+				last_tail: ([226, 0, 0], 1),
+				..Default::default()
+			})
+		);
+
+		assert_eq!(
+			parse(InputState {
+				chunk: content_right,
+				row: row(&["a"]),
+				cell: String::from(""),
+				last_tail: ([226, 0, 0], 1),
+				..Default::default()
+			}),
+			Ok(OutputState {
+				csv: Vec::new(),
+				row: row(&["a", "€"]),
+				cell: String::from("c"),
+				..Default::default()
+			})
+		);
+	}
+
+	#[test]
+	fn parse_csv_test_break_2_byte_utf8_sequence() {
+		let whole_content = "a,é,c".as_bytes();
+		let (content_left, content_right): (&[u8], &[u8]) = whole_content.split_at(whole_content.len() / 2);
+
+		assert_eq!(
+			parse(InputState {
+				chunk: content_left,
+				..Default::default()
+			}),
+			Ok(OutputState {
+				csv: Vec::new(),
+				row: row(&["a"]),
+				cell: String::from(""),
+				last_tail: ([195, 0, 0], 1),
+				..Default::default()
+			})
+		);
+
+		assert_eq!(
+			parse(InputState {
+				chunk: content_right,
+				row: row(&["a"]),
+				cell: String::from(""),
+				last_tail: ([195, 0, 0], 1),
+				..Default::default()
+			}),
+			Ok(OutputState {
+				csv: Vec::new(),
+				row: row(&["a", "é"]),
+				cell: String::from("c"),
+				..Default::default()
+			})
+		);
+	}
+
+	#[test]
+	fn parse_csv_test_split_on_1_byte_utf8_boundary() {
+		let whole_content = "a,b,c".as_bytes();
+		let (content_left, content_right): (&[u8], &[u8]) = whole_content.split_at(whole_content.len() / 2);
+
+		assert_eq!(
+			parse(InputState {
+				chunk: content_left,
+				..Default::default()
+			}),
+			Ok(OutputState {
+				csv: Vec::new(),
+				row: row(&["a"]),
+				cell: String::from(""),
+				..Default::default()
+			})
+		);
+
+		assert_eq!(
+			parse(InputState {
+				chunk: content_right,
+				row: row(&["a"]),
+				cell: String::from(""),
+				..Default::default()
+			}),
+			Ok(OutputState {
+				csv: Vec::new(),
+				row: row(&["a", "b"]),
+				cell: String::from("c"),
+				..Default::default()
+			})
+		);
+	}
+
+	#[test]
+	fn utf8_tail_start_test_edgecases() {
+		assert_eq!(utf8_tail_start(b""), 0);
+		assert_eq!(utf8_tail_start(b"a"), 1);
+		assert_eq!(utf8_tail_start("é".as_bytes()), "é".len());
+		assert_eq!(utf8_tail_start("€".as_bytes()), "€".len());
+		assert_eq!(utf8_tail_start("💩".as_bytes()), "💩".len());
+		assert_eq!(utf8_tail_start("🧑🏿‍💻".as_bytes()), "🧑🏿‍💻".len());
+
+		assert_eq!(utf8_tail_start(&[0xC3]), 0); // start of 2-byte char
+		assert_eq!(utf8_tail_start(&[0xE2]), 0); // start of 3-byte char
+		assert_eq!(utf8_tail_start(&[0xE2, 0x82]), 0); // 2/3 bytes of 3-byte char
+		assert_eq!(utf8_tail_start(&[0xF0]), 0); // start of 4-byte char
+		assert_eq!(utf8_tail_start(&[0xF0, 0x9F]), 0); // 2/4 bytes
+		assert_eq!(utf8_tail_start(&[0xF0, 0x9F, 0x92]), 0); // 3/4 bytes
+
+		let s = "aéüß€🧑🏿‍💻💩";
+		for i in 0..=s.len() {
+			let chunk = &s.as_bytes()[..i];
+			let split = utf8_tail_start(chunk);
+			assert!(std::str::from_utf8(&chunk[..split]).is_ok());
+		}
 	}
 }
