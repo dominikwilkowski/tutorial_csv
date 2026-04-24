@@ -22,3 +22,6 @@ target
 
 # OS specific files
 .DS_Store
+
+# Generated test CSV
+test.csv

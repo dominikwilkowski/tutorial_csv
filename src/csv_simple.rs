@@ -19,8 +19,7 @@ fn parse(content: String) -> Result<Vec<Vec<String>>, CsvParseError> {
 	let mut cell = String::new();
 	let mut inside_quote = false;
 
-	let normalized_content = content.replace("\r\n", "\n").replace('\r', "\n");
-	let trimmed_content = normalized_content.trim_matches('\n');
+	let trimmed_content = content.trim_matches('\n');
 
 	if trimmed_content.is_empty() {
 		return Ok(csv);
@@ -37,6 +36,18 @@ fn parse(content: String) -> Result<Vec<Vec<String>>, CsvParseError> {
 			'"' => inside_quote = !inside_quote,
 			',' if !inside_quote => {
 				row.push(take(&mut cell));
+			},
+			'\r' => {
+				// normalize `\r\n` and lone `\r` to `\n`
+				if iter.peek() == Some(&'\n') {
+					iter.next();
+				}
+				if inside_quote {
+					cell.push('\n');
+				} else {
+					row.push(take(&mut cell));
+					csv.push(take(&mut row));
+				}
 			},
 			'\n' if !inside_quote => {
 				row.push(take(&mut cell));
