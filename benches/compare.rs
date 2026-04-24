@@ -12,7 +12,7 @@ fn csv_parse_benchmark(criterion: &mut Criterion) {
 	group.measurement_time(Duration::from_secs(180));
 
 	group.bench_function("simple", |bencher| {
-		bencher.iter(|| csv_simple::parse_csv(black_box(path.clone())));
+		bencher.iter(|| csv_simple::Csv::parse_file(black_box(path.clone())));
 	});
 
 	group.bench_function("sliding window", |bencher| {
