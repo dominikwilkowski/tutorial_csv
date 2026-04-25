@@ -58,5 +58,5 @@ fn main() {
 	let path = PathBuf::from("test.csv");
 
 	measure("simple:", || csv_simple::Csv::parse_file(path.clone()));
-	measure("sliding window:", || csv_sliding_window::parse_csv(path.clone()));
+	measure("sliding window:", || csv_sliding_window::Csv::default().parse_file(path.clone()));
 }

@@ -16,7 +16,7 @@ fn csv_parse_benchmark(criterion: &mut Criterion) {
 	});
 
 	group.bench_function("sliding window", |bencher| {
-		bencher.iter(|| csv_sliding_window::parse_csv(black_box(path.clone())));
+		bencher.iter(|| csv_sliding_window::Csv::default().parse_file(black_box(path.clone())));
 	});
 
 	group.finish();
