@@ -27,14 +27,6 @@ impl Csv {
 			Ok(mut content) => {
 				let mut buffer = [0_u8; BUFFER_SIZE];
 				let mut csv = Vec::new();
-				self.row = Vec::new();
-				self.cell = String::new();
-				self.has_structure = false;
-				self.pending_empty_rows = 0;
-				self.inside_quote = false;
-				self.last_char_was_cr = false;
-				self.last_char_was_quote = false;
-				self.last_tail = ([0; 3], 0);
 
 				loop {
 					let bytes_read = match content.read(&mut buffer) {
@@ -47,14 +39,8 @@ impl Csv {
 					// or on pipes/sockets), so we slice down to what was actually filled.
 					let chunk = &buffer[..bytes_read];
 
-					match self.parse(chunk) {
-						Ok(data) => {
-							csv.extend(data);
-						},
-						Err(error) => {
-							return Err(error);
-						},
-					}
+					let data = self.parse(chunk)?;
+					csv.extend(data);
 				}
 
 				if self.inside_quote {
