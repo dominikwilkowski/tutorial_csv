@@ -12,7 +12,7 @@ const BUFFER_SIZE: usize = 65536;
 #[derive(Debug, PartialEq, Default)]
 struct CsvParser {
 	row: Vec<String>,
-	cell: String,
+	cell: Vec<u8>,
 	has_structure: bool,
 	pending_empty_rows: usize,
 	inside_quote: bool,
@@ -21,13 +21,13 @@ struct CsvParser {
 }
 
 impl CsvParser {
-	fn parse_into(&mut self, chunk: &str, csv: &mut Vec<Vec<String>>) -> () {
-		let mut iter = chunk.chars().peekable();
+	fn parse_into(&mut self, chunk: &str, csv: &mut Vec<Vec<String>>) {
+		let mut iter = chunk.bytes().peekable();
 
-		while let Some(character) = iter.next() {
+		while let Some(byte) = iter.next() {
 			if !self.inside_quote && self.pending_empty_rows > 0 {
-				match character {
-					'\r' | '\n' => {
+				match byte {
+					b'\r' | b'\n' => {
 						// still in a run of blank lines; they will be handled in the next match below
 					},
 					_ => {
@@ -39,8 +39,8 @@ impl CsvParser {
 				}
 			}
 
-			match character {
-				'"' if self.last_char_was_quote => {
+			match byte {
+				b'"' if self.last_char_was_quote => {
 					self.has_structure = true;
 					self.last_char_was_cr = false;
 					self.last_char_was_quote = false;
@@ -48,32 +48,33 @@ impl CsvParser {
 					// here means that close was actually the first half of a `""` escape split across chunks;
 					// undo the close and emit the literal `"` we should have pushed back then
 					self.inside_quote = true;
-					self.cell.push('"');
+					self.cell.push(b'"');
 				},
-				'"' if self.inside_quote && iter.peek() == Some(&'"') => {
+				b'"' if self.inside_quote && iter.peek() == Some(&b'"') => {
 					self.has_structure = true;
 					self.last_char_was_cr = false;
 					self.last_char_was_quote = false;
-					self.cell.push('"');
+					self.cell.push(b'"');
 					iter.next(); // we found an escaped quote "" which we have to reduce to one, that's why we consume the second quote
 				},
-				'"' => {
+				b'"' => {
 					self.has_structure = true;
 					self.last_char_was_cr = false;
 					// only ambiguous when closing at end of iter - opens and mid-chunk closes are unambiguous
 					self.last_char_was_quote = self.inside_quote && iter.peek().is_none();
 					self.inside_quote = !self.inside_quote;
 				},
-				',' if !self.inside_quote => {
+				b',' if !self.inside_quote => {
 					self.has_structure = true;
 					self.last_char_was_cr = false;
 					self.last_char_was_quote = false;
-					self.row.push(take(&mut self.cell));
+					self.row.push(String::from_utf8(self.cell.clone()).expect("validated upstream"));
+					self.cell.clear();
 				},
-				'\r' => {
+				b'\r' => {
 					self.last_char_was_quote = false;
 
-					let had_lf_in_same_chunk = iter.peek() == Some(&'\n');
+					let had_lf_in_same_chunk = iter.peek() == Some(&b'\n');
 					if had_lf_in_same_chunk {
 						// normalize `\r\n` and lone `\r` to `\n`
 						iter.next();
@@ -83,10 +84,11 @@ impl CsvParser {
 					self.last_char_was_cr = !had_lf_in_same_chunk;
 
 					if self.inside_quote {
-						self.cell.push('\n');
+						self.cell.push(b'\n');
 					} else {
 						if self.has_structure || !self.row.is_empty() || !self.cell.is_empty() {
-							self.row.push(take(&mut self.cell));
+							self.row.push(String::from_utf8(self.cell.clone()).expect("validated upstream"));
+							self.cell.clear();
 							csv.push(take(&mut self.row));
 						} else {
 							self.pending_empty_rows += 1;
@@ -94,18 +96,19 @@ impl CsvParser {
 						self.has_structure = false;
 					}
 				},
-				'\n' if self.last_char_was_cr => {
+				b'\n' if self.last_char_was_cr => {
 					// We've hit a case where the sliding window split an old school windows `\r\n` and so
 					// we need to ignore the `\n` to not count them twice
 					self.last_char_was_cr = false;
 					self.last_char_was_quote = false;
 				},
-				'\n' if !self.inside_quote => {
+				b'\n' if !self.inside_quote => {
 					self.last_char_was_cr = false;
 					self.last_char_was_quote = false;
 
 					if self.has_structure || !self.row.is_empty() || !self.cell.is_empty() {
-						self.row.push(take(&mut self.cell));
+						self.row.push(String::from_utf8(self.cell.clone()).expect("validated upstream"));
+						self.cell.clear();
 						csv.push(take(&mut self.row));
 					} else {
 						self.pending_empty_rows += 1;
@@ -116,7 +119,7 @@ impl CsvParser {
 					self.has_structure = true;
 					self.last_char_was_cr = false;
 					self.last_char_was_quote = false;
-					self.cell.push(character);
+					self.cell.push(byte);
 				},
 			}
 		}
@@ -202,7 +205,7 @@ impl Csv {
 		}
 
 		if self.parser.has_structure || !self.parser.cell.is_empty() || !self.parser.row.is_empty() {
-			self.parser.row.push(take(&mut self.parser.cell));
+			self.parser.row.push(String::from_utf8(take(&mut self.parser.cell)).expect("validated upstream"));
 			return Some(Ok(take(&mut self.parser.row)));
 		}
 
@@ -288,7 +291,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["4", "5"]),
-				cell: String::from("6"),
+				cell: Vec::from(b"6"),
 				has_structure: true,
 				..Default::default()
 			}
@@ -315,7 +318,7 @@ mod tests {
 		assert_eq!(
 			state,
 			CsvParser {
-				cell: String::from("b"),
+				cell: Vec::from(b"b"),
 				has_structure: true,
 				..Default::default()
 			}
@@ -350,7 +353,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["4", ""]),
-				cell: String::from("6"),
+				cell: Vec::from(b"6"),
 				has_structure: true,
 				..Default::default()
 			}
@@ -368,7 +371,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["1", "2"]),
-				cell: String::from("3  "),
+				cell: Vec::from(b"3  "),
 				has_structure: true,
 				..Default::default()
 			}
@@ -386,7 +389,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["4", "5"]),
-				cell: String::from("6"),
+				cell: Vec::from(b"6"),
 				has_structure: true,
 				..Default::default()
 			}
@@ -484,7 +487,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["4", "5"]),
-				cell: String::from("6"),
+				cell: Vec::from(b"6"),
 				has_structure: true,
 				..Default::default()
 			}
@@ -502,7 +505,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["1", "2"]),
-				cell: String::from("3\n4,5,6"),
+				cell: Vec::from(b"3\n4,5,6"),
 				inside_quote: true,
 				has_structure: true,
 				..Default::default()
@@ -521,7 +524,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["4", "5"]),
-				cell: String::from("6"),
+				cell: Vec::from(b"6"),
 				inside_quote: true,
 				has_structure: true,
 				..Default::default()
@@ -555,7 +558,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["1", "2"]),
-				cell: String::from("3"),
+				cell: Vec::from(b"3"),
 				has_structure: true,
 				..Default::default()
 			}
@@ -576,7 +579,7 @@ mod tests {
 	// 		state,
 	// 		CsvParser {
 	// 			row: row(&["a"]),
-	// 			cell: String::from("🧑"),
+	// 			cell: Vec::from(b"🧑"),
 	// 			has_structure: true,
 	// 			..Default::default()
 	// 		}
@@ -589,7 +592,7 @@ mod tests {
 	// 		state,
 	// 		CsvParser {
 	// 			row: row(&["a", "🧑🏿‍💻"]),
-	// 			cell: String::from("c"),
+	// 			cell: Vec::from(b"c"),
 	// 			has_structure: true,
 	// 			..Default::default()
 	// 		}
@@ -610,7 +613,7 @@ mod tests {
 	// 		state,
 	// 		CsvParser {
 	// 			row: row(&["a"]),
-	// 			cell: String::from(""),
+	// 			cell: Vec::from(b""),
 	// 			has_structure: true,
 	// 			..Default::default()
 	// 		}
@@ -623,7 +626,7 @@ mod tests {
 	// 		state,
 	// 		CsvParser {
 	// 			row: row(&["a", "€"]),
-	// 			cell: String::from("c"),
+	// 			cell: Vec::from(b"c"),
 	// 			has_structure: true,
 	// 			..Default::default()
 	// 		}
@@ -644,7 +647,7 @@ mod tests {
 	// 		state,
 	// 		CsvParser {
 	// 			row: row(&["a"]),
-	// 			cell: String::from(""),
+	// 			cell: Vec::from(b""),
 	// 			has_structure: true,
 	// 			..Default::default()
 	// 		}
@@ -657,7 +660,7 @@ mod tests {
 	// 		state,
 	// 		CsvParser {
 	// 			row: row(&["a", "é"]),
-	// 			cell: String::from("c"),
+	// 			cell: Vec::from(b"c"),
 	// 			has_structure: true,
 	// 			..Default::default()
 	// 		}
@@ -678,7 +681,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["a"]),
-				cell: String::from(""),
+				cell: Vec::from(b""),
 				has_structure: true,
 				..Default::default()
 			}
@@ -691,7 +694,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["a", "b"]),
-				cell: String::from("c"),
+				cell: Vec::from(b"c"),
 				has_structure: true,
 				..Default::default()
 			}
@@ -715,7 +718,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["a"]),
-				cell: String::from("x"),
+				cell: Vec::from(b"x"),
 				last_char_was_quote: true,
 				has_structure: true,
 				..Default::default()
@@ -729,7 +732,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["a", "x\"y"]),
-				cell: String::from("c"),
+				cell: Vec::from(b"c"),
 				has_structure: true,
 				..Default::default()
 			}

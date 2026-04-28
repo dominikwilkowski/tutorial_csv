@@ -23,5 +23,6 @@ target
 # OS specific files
 .DS_Store
 
-# Generated test CSV
+# Generated artifacts
 test.csv
+flamegraph.svg
