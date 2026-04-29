@@ -11,3 +11,6 @@ criterion = { version = "0.8", features = ["html_reports"] }
 [[bench]]
 name = "compare"
 harness = false
+
+[profile.release]
+debug = "line-tables-only"

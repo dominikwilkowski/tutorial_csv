@@ -26,3 +26,4 @@ target
 # Generated artifacts
 test.csv
 flamegraph.svg
+profile.json.gz

@@ -565,107 +565,50 @@ mod tests {
 		);
 	}
 
-	// #[test]
-	// fn parse_into_test_break_4_byte_utf8_sequence() {
-	// 	let whole_content = "a,🧑🏿‍💻,c";
-	// 	let (content_left, content_right) = whole_content.split_at(whole_content.len() / 2);
+	#[test]
+	fn parse_file_test_break_4_byte_utf8_sequence() {
+		let path = env::temp_dir().join("csv_test_break_4_byte_utf8.csv");
 
-	// 	let mut state = CsvParser::default();
-	// 	let mut result_row = Vec::new();
-	// 	state.parse_into(content_left, &mut result_row);
+		let first_cell = "a".repeat(BUFFER_SIZE - 3);
+		write(&path, format!("{first_cell},🧑🏿‍💻,c\nsecond,row\n")).unwrap();
 
-	// 	assert!(result_row.is_empty());
-	// 	assert_eq!(
-	// 		state,
-	// 		CsvParser {
-	// 			row: row(&["a"]),
-	// 			cell: Vec::from(b"🧑"),
-	// 			has_structure: true,
-	// 			..Default::default()
-	// 		}
-	// 	);
+		let mut csv = Csv::parse_file(path.clone()).unwrap();
+		assert_eq!(csv.next(), Some(Ok(row(&[&first_cell, "🧑🏿‍💻", "c"]))));
+		assert_eq!(csv.next(), Some(Ok(row(&["second", "row"]))));
+		assert_eq!(csv.next(), None);
 
-	// 	state.parse_into(content_right, &mut result_row);
+		let _ = remove_file(&path);
+	}
 
-	// 	assert!(result_row.is_empty());
-	// 	assert_eq!(
-	// 		state,
-	// 		CsvParser {
-	// 			row: row(&["a", "🧑🏿‍💻"]),
-	// 			cell: Vec::from(b"c"),
-	// 			has_structure: true,
-	// 			..Default::default()
-	// 		}
-	// 	);
-	// }
+	#[test]
+	fn parse_file_test_break_3_byte_utf8_sequence() {
+		let path = env::temp_dir().join("csv_test_break_3_byte_utf8.csv");
 
-	// #[test]
-	// fn parse_into_test_break_3_byte_utf8_sequence() {
-	// 	let whole_content = "a,€,c";
-	// 	let (content_left, content_right) = whole_content.split_at(whole_content.len() / 2);
+		let first_cell = "a".repeat(BUFFER_SIZE - 3);
+		write(&path, format!("{first_cell},€,c\nsecond,row\n")).unwrap();
 
-	// 	let mut state = CsvParser::default();
-	// 	let mut result_row = Vec::new();
-	// 	state.parse_into(content_left, &mut result_row);
+		let mut csv = Csv::parse_file(path.clone()).unwrap();
+		assert_eq!(csv.next(), Some(Ok(row(&[&first_cell, "€", "c"]))));
+		assert_eq!(csv.next(), Some(Ok(row(&["second", "row"]))));
+		assert_eq!(csv.next(), None);
 
-	// 	assert!(result_row.is_empty());
-	// 	assert_eq!(
-	// 		state,
-	// 		CsvParser {
-	// 			row: row(&["a"]),
-	// 			cell: Vec::from(b""),
-	// 			has_structure: true,
-	// 			..Default::default()
-	// 		}
-	// 	);
+		let _ = remove_file(&path);
+	}
 
-	// 	state.parse_into(content_right, &mut result_row);
+	#[test]
+	fn parse_file_test_break_2_byte_utf8_sequence() {
+		let path = env::temp_dir().join("csv_test_break_2_byte_utf8.csv");
 
-	// 	assert!(result_row.is_empty());
-	// 	assert_eq!(
-	// 		state,
-	// 		CsvParser {
-	// 			row: row(&["a", "€"]),
-	// 			cell: Vec::from(b"c"),
-	// 			has_structure: true,
-	// 			..Default::default()
-	// 		}
-	// 	);
-	// }
+		let first_cell = "a".repeat(BUFFER_SIZE - 2);
+		write(&path, format!("{first_cell},é,c\nsecond,row\n")).unwrap();
 
-	// #[test]
-	// fn parse_into_test_break_2_byte_utf8_sequence() {
-	// 	let whole_content = "a,é,c";
-	// 	let (content_left, content_right) = whole_content.split_at(whole_content.len() / 2);
+		let mut csv = Csv::parse_file(path.clone()).unwrap();
+		assert_eq!(csv.next(), Some(Ok(row(&[&first_cell, "é", "c"]))));
+		assert_eq!(csv.next(), Some(Ok(row(&["second", "row"]))));
+		assert_eq!(csv.next(), None);
 
-	// 	let mut state = CsvParser::default();
-	// 	let mut result_row = Vec::new();
-	// 	state.parse_into(content_left, &mut result_row);
-
-	// 	assert!(result_row.is_empty());
-	// 	assert_eq!(
-	// 		state,
-	// 		CsvParser {
-	// 			row: row(&["a"]),
-	// 			cell: Vec::from(b""),
-	// 			has_structure: true,
-	// 			..Default::default()
-	// 		}
-	// 	);
-
-	// 	state.parse_into(content_right, &mut result_row);
-
-	// 	assert!(result_row.is_empty());
-	// 	assert_eq!(
-	// 		state,
-	// 		CsvParser {
-	// 			row: row(&["a", "é"]),
-	// 			cell: Vec::from(b"c"),
-	// 			has_structure: true,
-	// 			..Default::default()
-	// 		}
-	// 	);
-	// }
+		let _ = remove_file(&path);
+	}
 
 	#[test]
 	fn parse_into_test_split_on_1_byte_utf8_boundary() {
