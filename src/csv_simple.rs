@@ -98,6 +98,11 @@ mod tests {
 	}
 
 	#[test]
+	fn parse_test_cr_only_line_endings() {
+		assert_eq!(Csv::parse(String::from("a,b\rc,d")), Ok(vec![row(&["a", "b"]), row(&["c", "d"])]));
+	}
+
+	#[test]
 	fn parse_test_crlf_followed_by_lf_blank_line() {
 		assert_eq!(Csv::parse(String::from("a\r\n\nb")), Ok(vec![row(&["a"]), row(&[""]), row(&["b"])]));
 	}
@@ -107,6 +112,14 @@ mod tests {
 		assert_eq!(
 			Csv::parse(String::from("a,b,c\n1,2,3\n4,5,6\n\n")),
 			Ok(vec![row(&["a", "b", "c"]), row(&["1", "2", "3"]), row(&["4", "5", "6"])])
+		);
+	}
+
+	#[test]
+	fn parse_test_multiple_pending_empty_rows() {
+		assert_eq!(
+			Csv::parse(String::from("a\n\n\n\nb")),
+			Ok(vec![row(&["a"]), row(&[""]), row(&[""]), row(&[""]), row(&["b"])])
 		);
 	}
 

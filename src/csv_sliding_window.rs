@@ -1,4 +1,10 @@
-use std::{fs::File, io::Read, mem::take, path::PathBuf, str};
+use std::{
+	fs::File,
+	io::Read,
+	mem::{replace, take},
+	path::PathBuf,
+	str,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CsvParseError {
@@ -9,15 +15,29 @@ pub enum CsvParseError {
 
 const BUFFER_SIZE: usize = 65536;
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq)]
 struct CsvParser {
 	row: Vec<String>,
 	cell: Vec<u8>,
-	has_structure: bool,
+	between_rows: bool,
 	pending_empty_rows: usize,
 	inside_quote: bool,
 	last_char_was_cr: bool,
 	last_char_was_quote: bool,
+}
+
+impl Default for CsvParser {
+	fn default() -> Self {
+		Self {
+			row: Vec::new(),
+			cell: Vec::new(),
+			between_rows: true,
+			pending_empty_rows: 0,
+			inside_quote: false,
+			last_char_was_cr: false,
+			last_char_was_quote: false,
+		}
+	}
 }
 
 impl CsvParser {
@@ -25,6 +45,11 @@ impl CsvParser {
 		let mut iter = chunk.bytes().peekable();
 
 		while let Some(byte) = iter.next() {
+			let was_cr = self.last_char_was_cr;
+			let was_quote = self.last_char_was_quote;
+			self.last_char_was_cr = false;
+			self.last_char_was_quote = false;
+
 			if !self.inside_quote && self.pending_empty_rows > 0 {
 				match byte {
 					b'\r' | b'\n' => {
@@ -40,10 +65,10 @@ impl CsvParser {
 			}
 
 			match byte {
-				b'"' if self.last_char_was_quote => {
-					self.has_structure = true;
-					self.last_char_was_cr = false;
-					self.last_char_was_quote = false;
+				b'"' if was_quote => {
+					if self.between_rows {
+						self.between_rows = false;
+					}
 					// previous chunk ended with a `"` that we processed as a close, but seeing another `"`
 					// here means that close was actually the first half of a `""` escape split across chunks;
 					// undo the close and emit the literal `"` we should have pushed back then
@@ -51,29 +76,28 @@ impl CsvParser {
 					self.cell.push(b'"');
 				},
 				b'"' if self.inside_quote && iter.peek() == Some(&b'"') => {
-					self.has_structure = true;
-					self.last_char_was_cr = false;
-					self.last_char_was_quote = false;
+					if self.between_rows {
+						self.between_rows = false;
+					}
 					self.cell.push(b'"');
 					iter.next(); // we found an escaped quote "" which we have to reduce to one, that's why we consume the second quote
 				},
 				b'"' => {
-					self.has_structure = true;
-					self.last_char_was_cr = false;
+					if self.between_rows {
+						self.between_rows = false;
+					}
 					// only ambiguous when closing at end of iter - opens and mid-chunk closes are unambiguous
 					self.last_char_was_quote = self.inside_quote && iter.peek().is_none();
 					self.inside_quote = !self.inside_quote;
 				},
 				b',' if !self.inside_quote => {
-					self.has_structure = true;
-					self.last_char_was_cr = false;
-					self.last_char_was_quote = false;
+					if self.between_rows {
+						self.between_rows = false;
+					}
 					self.row.push(String::from_utf8(self.cell.clone()).expect("validated upstream"));
 					self.cell.clear();
 				},
 				b'\r' => {
-					self.last_char_was_quote = false;
-
 					let had_lf_in_same_chunk = iter.peek() == Some(&b'\n');
 					if had_lf_in_same_chunk {
 						// normalize `\r\n` and lone `\r` to `\n`
@@ -86,39 +110,36 @@ impl CsvParser {
 					if self.inside_quote {
 						self.cell.push(b'\n');
 					} else {
-						if self.has_structure || !self.row.is_empty() || !self.cell.is_empty() {
+						if !self.between_rows || !self.row.is_empty() || !self.cell.is_empty() {
 							self.row.push(String::from_utf8(self.cell.clone()).expect("validated upstream"));
 							self.cell.clear();
-							csv.push(take(&mut self.row));
+							let next_row_capacity = self.row.capacity();
+							csv.push(replace(&mut self.row, Vec::with_capacity(next_row_capacity)));
 						} else {
 							self.pending_empty_rows += 1;
 						}
-						self.has_structure = false;
+						self.between_rows = true;
 					}
 				},
-				b'\n' if self.last_char_was_cr => {
+				b'\n' if was_cr => {
 					// We've hit a case where the sliding window split an old school windows `\r\n` and so
 					// we need to ignore the `\n` to not count them twice
-					self.last_char_was_cr = false;
-					self.last_char_was_quote = false;
 				},
 				b'\n' if !self.inside_quote => {
-					self.last_char_was_cr = false;
-					self.last_char_was_quote = false;
-
-					if self.has_structure || !self.row.is_empty() || !self.cell.is_empty() {
+					if !self.between_rows || !self.row.is_empty() || !self.cell.is_empty() {
 						self.row.push(String::from_utf8(self.cell.clone()).expect("validated upstream"));
 						self.cell.clear();
-						csv.push(take(&mut self.row));
+						let next_row_capacity = self.row.capacity();
+						csv.push(replace(&mut self.row, Vec::with_capacity(next_row_capacity)));
 					} else {
 						self.pending_empty_rows += 1;
 					}
-					self.has_structure = false;
+					self.between_rows = true;
 				},
 				_ => {
-					self.has_structure = true;
-					self.last_char_was_cr = false;
-					self.last_char_was_quote = false;
+					if self.between_rows {
+						self.between_rows = false;
+					}
 					self.cell.push(byte);
 				},
 			}
@@ -204,7 +225,7 @@ impl Csv {
 			return Some(Err(CsvParseError::UnterminatedQuote));
 		}
 
-		if self.parser.has_structure || !self.parser.cell.is_empty() || !self.parser.row.is_empty() {
+		if !self.parser.between_rows || !self.parser.cell.is_empty() || !self.parser.row.is_empty() {
 			self.parser.row.push(String::from_utf8(take(&mut self.parser.cell)).expect("validated upstream"));
 			return Some(Ok(take(&mut self.parser.row)));
 		}
@@ -292,7 +313,7 @@ mod tests {
 			CsvParser {
 				row: row(&["4", "5"]),
 				cell: Vec::from(b"6"),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -309,6 +330,24 @@ mod tests {
 	}
 
 	#[test]
+	fn parse_into_test_cr_only_line_endings() {
+		let mut state = CsvParser::default();
+		let mut result_row = Vec::new();
+		state.parse_into("a,b\rc,d", &mut result_row);
+
+		assert_eq!(result_row, vec![row(&["a", "b"])]);
+		assert_eq!(
+			state,
+			CsvParser {
+				row: row(&["c"]),
+				cell: Vec::from(b"d"),
+				between_rows: false,
+				..Default::default()
+			}
+		);
+	}
+
+	#[test]
 	fn parse_into_test_crlf_followed_by_lf_blank_line() {
 		let mut state = CsvParser::default();
 		let mut result_row = Vec::new();
@@ -319,7 +358,7 @@ mod tests {
 			state,
 			CsvParser {
 				cell: Vec::from(b"b"),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -336,6 +375,24 @@ mod tests {
 			state,
 			CsvParser {
 				pending_empty_rows: 1,
+				between_rows: true,
+				..Default::default()
+			}
+		);
+	}
+
+	#[test]
+	fn parse_into_test_multiple_pending_empty_rows() {
+		let mut state = CsvParser::default();
+		let mut result_row = Vec::new();
+		state.parse_into("a\n\n\n\nb", &mut result_row);
+
+		assert_eq!(result_row, vec![row(&["a"]), row(&[""]), row(&[""]), row(&[""])]);
+		assert_eq!(
+			state,
+			CsvParser {
+				cell: Vec::from(b"b"),
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -354,7 +411,7 @@ mod tests {
 			CsvParser {
 				row: row(&["4", ""]),
 				cell: Vec::from(b"6"),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -372,7 +429,7 @@ mod tests {
 			CsvParser {
 				row: row(&["1", "2"]),
 				cell: Vec::from(b"3  "),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -390,7 +447,7 @@ mod tests {
 			CsvParser {
 				row: row(&["4", "5"]),
 				cell: Vec::from(b"6"),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -407,7 +464,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&["a", "b"]),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -424,7 +481,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&[""]),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -441,7 +498,7 @@ mod tests {
 			state,
 			CsvParser {
 				row: row(&[""]),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -458,7 +515,7 @@ mod tests {
 			state,
 			CsvParser {
 				last_char_was_quote: true,
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -488,7 +545,7 @@ mod tests {
 			CsvParser {
 				row: row(&["4", "5"]),
 				cell: Vec::from(b"6"),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -507,7 +564,7 @@ mod tests {
 				row: row(&["1", "2"]),
 				cell: Vec::from(b"3\n4,5,6"),
 				inside_quote: true,
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -526,7 +583,7 @@ mod tests {
 				row: row(&["4", "5"]),
 				cell: Vec::from(b"6"),
 				inside_quote: true,
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -546,6 +603,7 @@ mod tests {
 			state,
 			CsvParser {
 				last_char_was_cr: true,
+				between_rows: true,
 				..Default::default()
 			}
 		);
@@ -559,7 +617,7 @@ mod tests {
 			CsvParser {
 				row: row(&["1", "2"]),
 				cell: Vec::from(b"3"),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -625,7 +683,7 @@ mod tests {
 			CsvParser {
 				row: row(&["a"]),
 				cell: Vec::from(b""),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -638,7 +696,7 @@ mod tests {
 			CsvParser {
 				row: row(&["a", "b"]),
 				cell: Vec::from(b"c"),
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -663,7 +721,7 @@ mod tests {
 				row: row(&["a"]),
 				cell: Vec::from(b"x"),
 				last_char_was_quote: true,
-				has_structure: true,
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -676,7 +734,70 @@ mod tests {
 			CsvParser {
 				row: row(&["a", "x\"y"]),
 				cell: Vec::from(b"c"),
-				has_structure: true,
+				between_rows: false,
+				..Default::default()
+			}
+		);
+	}
+
+	#[test]
+	fn parse_into_test_break_cr_followed_by_content() {
+		let whole_content = "a,b\rc,d";
+		let (content_left, content_right) = whole_content.split_at(4);
+
+		let mut state = CsvParser::default();
+		let mut result_row = Vec::new();
+		state.parse_into(content_left, &mut result_row);
+
+		assert_eq!(result_row, vec![row(&["a", "b"])]);
+		assert_eq!(
+			state,
+			CsvParser {
+				last_char_was_cr: true,
+				between_rows: true,
+				..Default::default()
+			}
+		);
+
+		state.parse_into(content_right, &mut result_row);
+
+		assert_eq!(result_row, vec![row(&["a", "b"])]);
+		assert_eq!(
+			state,
+			CsvParser {
+				row: row(&["c"]),
+				cell: Vec::from(b"d"),
+				between_rows: false,
+				..Default::default()
+			}
+		);
+	}
+
+	#[test]
+	fn parse_into_test_pending_empty_rows_drained_in_next_chunk() {
+		let mut state = CsvParser::default();
+		let mut result_row = Vec::new();
+		state.parse_into("a\n\n\n", &mut result_row);
+
+		assert_eq!(result_row, vec![row(&["a"])]);
+		assert_eq!(
+			state,
+			CsvParser {
+				pending_empty_rows: 2,
+				between_rows: true,
+				..Default::default()
+			}
+		);
+
+		result_row.clear();
+		state.parse_into("b", &mut result_row);
+
+		assert_eq!(result_row, vec![row(&[""]), row(&[""])]);
+		assert_eq!(
+			state,
+			CsvParser {
+				cell: Vec::from(b"b"),
+				between_rows: false,
 				..Default::default()
 			}
 		);
@@ -746,5 +867,64 @@ mod tests {
 		let result = Csv::parse_file(path.clone()).and_then(|csv| csv.collect::<Result<Vec<_>, _>>());
 		let _ = remove_file(&path);
 		assert_eq!(result, Ok(vec![row(&[""])]));
+	}
+
+	#[test]
+	fn parse_file_test_unterminated_quote_returns_error() {
+		let path = env::temp_dir().join("csv_test_unterminated_quote.csv");
+		write(&path, b"a,\"unterminated\nb,c\n").unwrap();
+
+		let result = Csv::parse_file(path.clone()).and_then(|csv| csv.collect::<Result<Vec<_>, _>>());
+		let _ = remove_file(&path);
+		assert_eq!(result, Err(CsvParseError::UnterminatedQuote));
+	}
+
+	#[test]
+	fn parse_file_test_unable_to_open_file() {
+		let result = Csv::parse_file(PathBuf::from("/this/path/does/not/exist/anywhere.csv"));
+		assert_eq!(result.err(), Some(CsvParseError::UnableToOpenFile));
+	}
+
+	#[test]
+	fn parse_file_test_break_on_comma_boundary() {
+		// `,` falls exactly on the last byte of the first read
+		let path = env::temp_dir().join("csv_test_break_on_comma.csv");
+
+		let first_cell = "a".repeat(BUFFER_SIZE - 1);
+		write(&path, format!("{first_cell},b,c\nsecond,row\n")).unwrap();
+
+		let mut csv = Csv::parse_file(path.clone()).unwrap();
+		assert_eq!(csv.next(), Some(Ok(row(&[&first_cell, "b", "c"]))));
+		assert_eq!(csv.next(), Some(Ok(row(&["second", "row"]))));
+		assert_eq!(csv.next(), None);
+
+		let _ = remove_file(&path);
+	}
+
+	#[test]
+	fn parse_file_test_break_on_lf_boundary() {
+		// `\n` falls exactly on the last byte of the first read
+		let path = env::temp_dir().join("csv_test_break_on_lf.csv");
+
+		let first_cell = "a".repeat(BUFFER_SIZE - 1);
+		write(&path, format!("{first_cell}\nsecond,row\n")).unwrap();
+
+		let mut csv = Csv::parse_file(path.clone()).unwrap();
+		assert_eq!(csv.next(), Some(Ok(row(&[&first_cell]))));
+		assert_eq!(csv.next(), Some(Ok(row(&["second", "row"]))));
+		assert_eq!(csv.next(), None);
+
+		let _ = remove_file(&path);
+	}
+
+	#[test]
+	fn parse_file_test_trailing_lone_cr_keeps_final_row() {
+		// file ends with `\r` and no following `\n`
+		let path = env::temp_dir().join("csv_test_trailing_lone_cr.csv");
+		write(&path, b"a,b\r").unwrap();
+
+		let result = Csv::parse_file(path.clone()).and_then(|csv| csv.collect::<Result<Vec<_>, _>>());
+		let _ = remove_file(&path);
+		assert_eq!(result, Ok(vec![row(&["a", "b"])]));
 	}
 }
