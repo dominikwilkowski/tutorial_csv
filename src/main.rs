@@ -1,5 +1,8 @@
+#![feature(portable_simd)]
+
 use std::path::PathBuf;
 
+mod csv_simd;
 mod csv_simple;
 mod csv_sliding_window;
 
@@ -10,4 +13,6 @@ fn main() {
 		csv_sliding_window::Csv::parse_file(PathBuf::from("small_test.csv"))
 			.and_then(|csv| csv.collect::<Result<Vec<_>, _>>())
 	);
+
+	csv_simd::foo();
 }
