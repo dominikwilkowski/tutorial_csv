@@ -1,4 +1,4 @@
-use std::simd::{Simd, cmp::SimdPartialEq};
+use std::simd::{Simd, cmp::SimdPartialEq as _};
 
 const LANE_COUNT: usize = 32;
 
@@ -77,7 +77,7 @@ fn find_delimiters_simd(text: &[u8]) -> Vec<DelimiterHit> {
 	hits
 }
 
-fn classify_byte(byte: u8) -> Option<Delimiter> {
+const fn classify_byte(byte: u8) -> Option<Delimiter> {
 	match byte {
 		b'"' => Some(Delimiter::Quote),
 		b',' => Some(Delimiter::Comma),
@@ -107,4 +107,97 @@ pub fn foo() {
 
 	assert_eq!(hits, find_delimiters_scalar(text.as_bytes()));
 	println!("simd and scalar agree");
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn find_delimiters_simd_test_empty() {
+		assert_eq!(find_delimiters_simd(b""), vec![]);
+	}
+
+	#[test]
+	fn find_delimiters_simd_test_no_delimiters() {
+		assert_eq!(find_delimiters_simd(b"hello world"), vec![]);
+	}
+
+	#[test]
+	fn find_delimiters_simd_test_simple_csv_line() {
+		let hits = find_delimiters_simd(b"a,b,c\n");
+		assert_eq!(
+			hits,
+			vec![
+				DelimiterHit {
+					position: 1,
+					kind: Delimiter::Comma
+				},
+				DelimiterHit {
+					position: 3,
+					kind: Delimiter::Comma
+				},
+				DelimiterHit {
+					position: 5,
+					kind: Delimiter::Newline
+				},
+			]
+		);
+	}
+
+	#[test]
+	fn find_delimiters_simd_test_quoted_field() {
+		let hits = find_delimiters_simd(b"\"hello\",world\n");
+		assert_eq!(
+			hits,
+			vec![
+				DelimiterHit {
+					position: 0,
+					kind: Delimiter::Quote
+				},
+				DelimiterHit {
+					position: 6,
+					kind: Delimiter::Quote
+				},
+				DelimiterHit {
+					position: 7,
+					kind: Delimiter::Comma
+				},
+				DelimiterHit {
+					position: 13,
+					kind: Delimiter::Newline
+				},
+			]
+		);
+	}
+
+	#[test]
+	fn find_delimiters_simd_test_agrees_with_scalar() {
+		let input = r#""name","age","city"
+"Alice",30,"New York"
+"Bob",25,"London"
+"#
+		.repeat(20);
+		assert_eq!(find_delimiters_simd(input.as_bytes()), find_delimiters_scalar(input.as_bytes()),);
+	}
+
+	#[test]
+	fn find_delimiters_simd_test_all_delimiters() {
+		let input = "\",\n".repeat(50);
+		let hits = find_delimiters_simd(input.as_bytes());
+		assert_eq!(hits.len(), 150);
+	}
+
+	#[test]
+	fn find_delimiters_simd_test_position_order() {
+		// Verify hits come out sorted without needing a sort
+		let input = r#""a","b","c"
+"d","e","f"
+"#
+		.repeat(10);
+		let hits = find_delimiters_simd(input.as_bytes());
+		for window in hits.windows(2) {
+			assert!(window[0].position < window[1].position);
+		}
+	}
 }

@@ -1,6 +1,6 @@
 use std::{
 	fs::File,
-	io::Read,
+	io::Read as _,
 	mem::{replace, take},
 	path::PathBuf,
 	str,
@@ -265,12 +265,9 @@ impl Iterator for Csv {
 			let total_bytes = self.tail_len + bytes_read;
 			let tail_start = Self::utf8_tail_start(&self.buffer[..total_bytes]);
 
-			let text = match str::from_utf8(&self.buffer[..tail_start]) {
-				Ok(text) => text,
-				Err(_) => {
-					self.finished = true;
-					return Some(Err(CsvParseError::CantReadUtf8));
-				},
+			let Ok(text) = str::from_utf8(&self.buffer[..tail_start]) else {
+				self.finished = true;
+				return Some(Err(CsvParseError::CantReadUtf8));
 			};
 
 			self.pending.clear();
