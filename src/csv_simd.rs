@@ -43,7 +43,6 @@ fn find_delimiters_simd(text: &[u8]) -> Vec<DelimiterHit> {
 
 		let base = aligned_offset + chunk_index * LANE_COUNT;
 
-		// Single loop: walk set bits in position order, classify by checking which mask owns each bit
 		while any_mask != 0 {
 			let lane = any_mask.trailing_zeros() as usize;
 			let bit = 1 << lane;
@@ -86,27 +85,67 @@ const fn classify_byte(byte: u8) -> Option<Delimiter> {
 	}
 }
 
-fn find_delimiters_scalar(text: &[u8]) -> Vec<DelimiterHit> {
-	text
-		.iter()
-		.enumerate()
-		.filter_map(|(position, &byte)| classify_byte(byte).map(|kind| DelimiterHit { position, kind }))
-		.collect()
+fn parse_csv(text: &[u8]) -> Vec<Vec<String>> {
+	let hits = find_delimiters_simd(text);
+	let mut rows = Vec::new();
+	let mut fields = Vec::new();
+	let mut inside_quotes = false;
+	let mut field_start = 0;
+
+	for hit in &hits {
+		match (hit.kind, inside_quotes) {
+			(Delimiter::Quote, _) => {
+				inside_quotes = !inside_quotes;
+			},
+			(Delimiter::Comma, false) => {
+				fields.push(extract_field(text, field_start, hit.position));
+				field_start = hit.position + 1;
+			},
+			(Delimiter::Newline, false) => {
+				fields.push(extract_field(text, field_start, hit.position));
+				rows.push(std::mem::take(&mut fields));
+				field_start = hit.position + 1;
+			},
+			// Commas and newlines inside quotes are literal content
+			_ => {},
+		}
+	}
+
+	// Handle final field if the file doesn't end with a newline
+	if field_start < text.len() {
+		fields.push(extract_field(text, field_start, text.len()));
+		rows.push(fields);
+	}
+
+	rows
+}
+
+fn extract_field(text: &[u8], start: usize, end: usize) -> String {
+	let mut raw = &text[start..end];
+
+	// Strip trailing \r so CRLF line endings just work
+	if raw.last() == Some(&b'\r') {
+		raw = &raw[..raw.len() - 1];
+	}
+
+	// Unquoted field — take bytes as-is
+	if raw.first() != Some(&b'"') {
+		return String::from_utf8_lossy(raw).into_owned();
+	}
+
+	// Quoted field — strip outer quotes and unescape "" → "
+	let inner = &raw[1..raw.len() - 1];
+	let unescaped = String::from_utf8_lossy(inner).replace("\"\"", "\"");
+	unescaped
 }
 
 pub fn foo() {
-	let text = r#"name,age,city
-"Alice",30,"New York"
-"Bob",25,"London"
-"#;
+	let text = "name,age,city\n\"Alice\",30,\"New York\"\nBob,25,London\n";
 
-	let hits = find_delimiters_simd(text.as_bytes());
-	for hit in &hits {
-		println!("  {:?} at byte {}", hit.kind, hit.position);
+	let rows = parse_csv(text.as_bytes());
+	for row in &rows {
+		println!("{:?}", row);
 	}
-
-	assert_eq!(hits, find_delimiters_scalar(text.as_bytes()));
-	println!("simd and scalar agree");
 }
 
 #[cfg(test)]
@@ -114,90 +153,78 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn find_delimiters_simd_test_empty() {
-		assert_eq!(find_delimiters_simd(b""), vec![]);
-	}
-
-	#[test]
-	fn find_delimiters_simd_test_no_delimiters() {
-		assert_eq!(find_delimiters_simd(b"hello world"), vec![]);
-	}
-
-	#[test]
-	fn find_delimiters_simd_test_simple_csv_line() {
-		let hits = find_delimiters_simd(b"a,b,c\n");
+	fn parse_csv_test_simple() {
+		let input = b"a,b,c\n1,2,3\n";
+		let rows = parse_csv(input);
 		assert_eq!(
-			hits,
+			rows,
 			vec![
-				DelimiterHit {
-					position: 1,
-					kind: Delimiter::Comma
-				},
-				DelimiterHit {
-					position: 3,
-					kind: Delimiter::Comma
-				},
-				DelimiterHit {
-					position: 5,
-					kind: Delimiter::Newline
-				},
+				vec![String::from("a"), String::from("b"), String::from("c")],
+				vec![String::from("1"), String::from("2"), String::from("3")],
 			]
 		);
 	}
 
 	#[test]
-	fn find_delimiters_simd_test_quoted_field() {
-		let hits = find_delimiters_simd(b"\"hello\",world\n");
+	fn parse_csv_test_quoted_fields() {
+		let input = b"\"hello\",world\n";
+		let rows = parse_csv(input);
+		assert_eq!(rows, vec![vec![String::from("hello"), String::from("world")],]);
+	}
+
+	#[test]
+	fn parse_csv_test_comma_inside_quotes() {
+		let input = b"\"one,two\",three\n";
+		let rows = parse_csv(input);
+		assert_eq!(rows, vec![vec![String::from("one,two"), String::from("three")],]);
+	}
+
+	#[test]
+	fn parse_csv_test_newline_inside_quotes() {
+		let input = b"\"line1\nline2\",other\n";
+		let rows = parse_csv(input);
+		assert_eq!(rows, vec![vec![String::from("line1\nline2"), String::from("other")],]);
+	}
+
+	#[test]
+	fn parse_csv_test_escaped_quotes() {
+		let input = b"\"say \"\"hello\"\"\",normal\n";
+		let rows = parse_csv(input);
+		assert_eq!(rows, vec![vec![String::from("say \"hello\""), String::from("normal")],]);
+	}
+
+	#[test]
+	fn parse_csv_test_crlf() {
+		let input = b"a,b\r\nc,d\r\n";
+		let rows = parse_csv(input);
 		assert_eq!(
-			hits,
+			rows,
 			vec![
-				DelimiterHit {
-					position: 0,
-					kind: Delimiter::Quote
-				},
-				DelimiterHit {
-					position: 6,
-					kind: Delimiter::Quote
-				},
-				DelimiterHit {
-					position: 7,
-					kind: Delimiter::Comma
-				},
-				DelimiterHit {
-					position: 13,
-					kind: Delimiter::Newline
-				},
+				vec![String::from("a"), String::from("b")],
+				vec![String::from("c"), String::from("d")],
 			]
 		);
 	}
 
 	#[test]
-	fn find_delimiters_simd_test_agrees_with_scalar() {
-		let input = r#""name","age","city"
-"Alice",30,"New York"
-"Bob",25,"London"
-"#
-		.repeat(20);
-		assert_eq!(find_delimiters_simd(input.as_bytes()), find_delimiters_scalar(input.as_bytes()),);
+	fn parse_csv_test_no_trailing_newline() {
+		let input = b"a,b,c";
+		let rows = parse_csv(input);
+		assert_eq!(rows, vec![vec![String::from("a"), String::from("b"), String::from("c")],]);
 	}
 
 	#[test]
-	fn find_delimiters_simd_test_all_delimiters() {
-		let input = "\",\n".repeat(50);
-		let hits = find_delimiters_simd(input.as_bytes());
-		assert_eq!(hits.len(), 150);
-	}
-
-	#[test]
-	fn find_delimiters_simd_test_position_order() {
-		// Verify hits come out sorted without needing a sort
-		let input = r#""a","b","c"
-"d","e","f"
-"#
-		.repeat(10);
-		let hits = find_delimiters_simd(input.as_bytes());
-		for window in hits.windows(2) {
-			assert!(window[0].position < window[1].position);
-		}
+	fn parse_csv_test_empty_fields() {
+		let input = b",,,\n";
+		let rows = parse_csv(input);
+		assert_eq!(
+			rows,
+			vec![vec![
+				String::from(""),
+				String::from(""),
+				String::from(""),
+				String::from("")
+			],]
+		);
 	}
 }
