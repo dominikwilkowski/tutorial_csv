@@ -1,3 +1,5 @@
+//! Implements a sliding window parser for CSV files
+
 use std::{
 	fs::File,
 	io::Read as _,
@@ -6,15 +8,23 @@ use std::{
 	str,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Represents an error parsing a CSV file using a sliding window approach
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsvParseError {
+	/// Unable to open the file
 	UnableToOpenFile,
+	/// The file contains an unterminated quote
 	UnterminatedQuote,
+	/// The file contains invalid UTF-8
 	CantReadUtf8,
 }
 
-const BUFFER_SIZE: usize = 65536;
+const BUFFER_SIZE: usize = 0x0001_0000; // 65536
 
+#[expect(
+	clippy::struct_excessive_bools,
+	reason = "the struct is used as a parser state machine"
+)]
 #[derive(Debug, PartialEq)]
 struct CsvParser {
 	row: Vec<String>,
@@ -147,6 +157,7 @@ impl CsvParser {
 	}
 }
 
+/// Represents a parsed CSV file using a sliding window approach
 #[derive(Debug)]
 pub struct Csv {
 	parser: CsvParser,
@@ -190,10 +201,16 @@ impl Csv {
 		bytes.len()
 	}
 
+	/// Parses a CSV file from the given path using a sliding window approach
 	pub fn parse_file(path: PathBuf) -> Result<Self, CsvParseError> {
 		Ok(Self {
 			parser: CsvParser::default(),
+			#[expect(clippy::map_err_ignore, reason = "the error is converted to CsvParseError")]
 			file: File::open(path).map_err(|_| CsvParseError::UnableToOpenFile)?,
+			#[expect(
+				clippy::large_stack_arrays,
+				reason = "the buffer size is fixed and known at compile time"
+			)]
 			buffer: [0; BUFFER_SIZE],
 			tail_len: 0,
 			pending: Vec::new(),
@@ -234,6 +251,10 @@ impl Csv {
 	}
 }
 
+#[expect(
+	clippy::missing_trait_methods,
+	reason = "std traits like iterators don't need to be implemented manually"
+)]
 impl Iterator for Csv {
 	type Item = Result<Vec<String>, CsvParseError>;
 
